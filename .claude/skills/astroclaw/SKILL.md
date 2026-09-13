@@ -22,17 +22,27 @@ CLI in this repo: `uv run astroclaw <cmd>`. Needs `siril-cli` 1.4+ and `exiftool
 4. **Pick the mode** from the first frame:
    - `horizon`: the foreground is everything below one skyline (mountains, sea, ridge).
    - `objects`: structures stick up into the sky (tower, tree, building, person).
-5. **Blend** - `uv run astroclaw blend <workdir> <mode>`, then **Read `preview_mask.jpg`** (red = taken
+5. **Blend** - `uv run astroclaw blend <workdir> <mode> [--foreground <jpg>] [--gradient 2]`, then
+   **Read `preview_mask.jpg`** (red = taken
    from the unaligned foreground stack). This check is not optional; a green exit code says nothing
    about the mask.
    - Red must cover every foreground object, including thin parts and anything at the frame edges.
    - Red must not cover open sky beyond a small margin; red blobs in the Milky Way are false positives.
+   - **`--foreground`**: look for a 1-5 min frame right before or after the run with the SAME framing
+     (`runs` hides it: different settings, one frame). Compare it with the run's first frame visually.
+     `blend.json` must show `ecc` > 0.9 and a shift of a few px; the command refuses worse.
+   - **`--gradient 2`** is the default choice; `3` only for strong, uneven light domes. Read
+     `preview_gradient.jpg`: it must be a smooth glow, brightest towards the horizon or a town.
 6. **Seam check at 1:1** - `uv run astroclaw crop <workdir> <y> <x>` on the hardest seam (bright
    object edges against the sky, the skyline where it is faintest). Coordinates are display
    orientation, full resolution. Look for doubled outlines (ghosts) next to bright objects and for
-   smeared ground just below the horizon.
-7. **Finish** - `uv run astroclaw finish <workdir>` → `<first-frame>_stackN.tif` next to the workdir,
-   EXIF copied, orientation normal. The TIFF is unedited on purpose.
+   smeared ground just below the horizon. With `--gradient`, also check where bright haze or a cloud
+   sea sits below the skyline: a lit rim above the ridge, a colour-shifted rim on it, or a second copy
+   of the ridge contour below it are all gradient-weight artefacts, not scene content. Compare against
+   the same crop of `fg_stack.fit` before believing any structure the blend shows near the skyline.
+7. **Finish** - `uv run astroclaw finish <workdir>` → `<first-frame>_stackN.tif` (16-bit, for editing)
+   and `.jpg` (q95, 4:4:4, for JPEG-only libraries) next to the workdir, EXIF copied, orientation
+   normal. No stretch or colour work is applied.
 
 ## When the mask is wrong
 
@@ -40,8 +50,10 @@ Tune in `src/astroclaw/blend.py`, re-run `blend` (seconds, no re-stack needed):
 
 | Symptom | Where |
 |-|-|
-| `horizon` misses a faint far ridge | the `0.25` factor in `horizon_mask` (higher = triggers on fainter dips) |
-| `horizon` line jumps to a bright cloud sea or town glow | the same factor lower, or the `0.60` search start |
+| `horizon` line misses a faint far ridge | `HORIZON_EDGE` lower (edge strength relative to the strongest edges) |
+| `horizon` line snags on a dust lane or cloud edge in the sky | `HORIZON_EDGE` higher, or `HORIZON_SEARCH` start lower in the frame |
+| Horizon sits outside 55-97 % of the frame height | `HORIZON_SEARCH` |
+| Lit rim above the ridge, or a copied ridge contour in haze below it | the `core` / `zone` kernels in `blend()`'s gradient block |
 | `objects` flags star specks in the sky | `area >= 1500` threshold higher |
 | `objects` skips an object cut off by the frame edge | the `at_edge & (area >= 150)` floor lower |
 | `objects` misses thin members (antenna rods, branches) | the `8 * sigma` threshold lower |

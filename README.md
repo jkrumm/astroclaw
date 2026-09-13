@@ -33,10 +33,19 @@ uv sync
 uv run astroclaw runs ~/Pictures/night                 # 1. list stackable runs
 uv run astroclaw prepare ~/Pictures/night ~/astro --run 3
 uv run astroclaw stack ~/astro/<first-frame>           # 2. Siril: fg_stack.fit + sky_stack.fit
-uv run astroclaw blend ~/astro/<first-frame> horizon   # 3. writes preview_mask.jpg - LOOK at it
+uv run astroclaw blend ~/astro/<first-frame> horizon \
+    --foreground ~/Pictures/night/<long-exposure>.JPG \
+    --gradient 2                                       # 3. writes preview_mask.jpg - LOOK at it
 uv run astroclaw crop  ~/astro/<first-frame> 5000 1500 #    1:1 seam check
-uv run astroclaw finish ~/astro/<first-frame>          # 4. <first-frame>_stackN.tif next to the workdir
+uv run astroclaw finish ~/astro/<first-frame>          # 4. <first-frame>_stackN.tif + .jpg next to the workdir
 ```
+
+Both `blend` options are optional:
+
+| Option | Does | Why |
+|-|-|-|
+| `--foreground <jpg>` | uses one long exposure of the same composition for the ground: aligned on the ground (ECC, refuses a shift over 30 px), tone-matched by histogram to the stack | a 2-4 min frame has far less noise in dark ground than any stack of short frames; its trailed sky is never used |
+| `--gradient 1\|2\|3` | fits the sky glow (light pollution, airglow) as a polynomial in linear light over open sky and subtracts it | flattens the horizon glow before any editing; the Milky Way's own glow is clipped out of the fit |
 
 A run is consecutive frames with identical ISO, aperture and shutter, each starting within
 `shutter + 20 s` of the previous one. `prepare` copies; originals are never touched.

@@ -8,14 +8,14 @@ fixed moves, applied in a fixed order. This page explains each one and which too
 
 | # | Move | What it fixes | Why the order matters |
 |-|-|-|-|
-| 1 | **Gradient removal** (background extraction) | Light pollution and airglow: the sky brightens and changes colour towards the horizon or one corner | Every later step amplifies whatever gradient is left |
+| 1 | **Gradient removal** (background extraction) - `astroclaw blend --gradient` | Light pollution and airglow: the sky brightens and changes colour towards the horizon or one corner | Every later step amplifies whatever gradient is left |
 | 2 | **Colour balance** | A sky that is orange, green or grey instead of neutral dark blue | Needs a flat background to judge against |
 | 3 | **Noise reduction** | Grain left after stacking | Do it before the stretch pulls the noise up with the signal |
 | 4 | **Star separation** | Splits the image into a starless layer and a stars-only layer (StarNet) | Lets steps 5 and 6 treat nebula and stars differently |
 | 5 | **Stretch** | Makes faint Milky Way structure visible by lifting the midtones without blowing out stars | Applied to the starless layer, it lifts dust lanes without bloating stars |
 | 6 | **Star reduction** | Shrinks or dims stars so the Milky Way core reads first | Recombine the star layer at 50-80 % strength |
 | 7 | **Local contrast and saturation** | Dust lanes and the core colour pop | Last, on the final look |
-| 8 | **Foreground** | Lift shadows, reduce noise, match colour temperature to the sky | Separate from the sky, through the blend mask |
+| 8 | **Foreground** - `astroclaw blend --foreground` for noise | Lift shadows, reduce noise, match colour temperature to the sky | Separate from the sky, through the blend mask |
 
 **Only the sky gets moves 1-7.** Gradient removal and stretches assume everything in frame is sky;
 run them over a mountain and they treat it as a gradient to flatten.

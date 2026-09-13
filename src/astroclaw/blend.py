@@ -39,25 +39,33 @@ def lum(img: np.ndarray) -> np.ndarray:
     return img @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
 
+HORIZON_SEARCH = (0.55, 0.97)   # fraction of image height the skyline may sit in
+HORIZON_EDGE = 0.2              # edge strength, relative to the strongest edges in the search band
+
+
 def horizon_mask(fg: np.ndarray, shift: float) -> np.ndarray:
+    """The skyline is the FIRST significant bright-above/dark-below edge from the top.
+
+    Brightness thresholds fail both ways: a dark dust lane at the Milky Way's base reads as ground,
+    and a bright cloud sea below a faint far ridge reads as sky. An edge in log luminance is sharp at
+    a ridge and soft at a dust lane, and taking the first one keeps the ridge above the cloud sea.
+    """
     h, w = fg.shape[:2]
     s = 4
-    small = cv2.GaussianBlur(cv2.resize(lum(fg), (w // s, h // s), interpolation=cv2.INTER_AREA), (0, 0), 3)
+    small = cv2.resize(lum(fg), (w // s, h // s), interpolation=cv2.INTER_AREA)
     sh, sw = small.shape
-    top = int(sh * 0.60)
-    horizon = np.full(sw, sh, dtype=np.float32)
-    for x in range(sw):
-        col = small[:, x]
-        sky = np.median(col[top:int(sh * 0.70)])
-        ground = np.median(col[int(sh * 0.90):])
-        below = np.nonzero(col[top:] < sky - 0.25 * (sky - ground))[0]  # first dip, so faint far ridges count
-        if below.size:
-            horizon[x] = top + below[0]
+    top, bottom = int(sh * HORIZON_SEARCH[0]), int(sh * HORIZON_SEARCH[1])
+    g = cv2.GaussianBlur(np.log(np.clip(small, 1e-4, None)), (0, 0), 1.2)
+    edge = np.zeros_like(g)
+    edge[1:-1] = np.maximum(g[:-2] - g[2:], 0)
+    edge /= np.percentile(edge[top:bottom], 99.5) + 1e-9
+    strong = edge[top:bottom] > HORIZON_EDGE
+    horizon = np.where(strong.any(0), top + strong.argmax(0), bottom).astype(np.float32)
     padded = np.pad(horizon, 4, mode="edge")
     horizon = np.array([np.median(padded[i:i + 9]) for i in range(sw)], dtype=np.float32)
     horizon = np.interp(np.arange(w), np.arange(sw) * s + s / 2, horizon * s)
     rows = np.arange(h)[:, None]
-    return (rows >= horizon[None, :] - shift / 2).astype(np.float32)
+    return (rows >= horizon[None, :] - shift).astype(np.float32)  # ghosts reach the full registration shift
 
 
 def objects_mask(fg: np.ndarray, shift: float) -> np.ndarray:
@@ -93,17 +101,48 @@ def objects_mask(fg: np.ndarray, shift: float) -> np.ndarray:
     return cv2.resize(m.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
 
 
-def blend(workdir: Path, mode: str) -> Path:
+def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: int | None = None) -> dict:
     reg = workdir / "registration.json"
     shift = json.loads(reg.read_text())["max_shift_px"] if reg.exists() else DEFAULT_SHIFT_PX
     rotation = ROTATIONS.get(orientation(workdir))
     rotate = (lambda im: cv2.rotate(im, rotation)) if rotation is not None else (lambda im: im)
+    make_mask = horizon_mask if mode == "horizon" else objects_mask
 
     sky = rotate(load_fits(workdir / "sky_stack.fit"))
     fg = rotate(load_fits(workdir / "fg_stack.fit"))
-    mask = horizon_mask(fg, shift) if mode == "horizon" else objects_mask(fg, shift)
-    mask = cv2.GaussianBlur(mask, (0, 0), FEATHER_PX)[..., None]
+    hard = make_mask(fg, shift)
+    ground = make_mask(fg, 0.0)          # the foreground itself, without the ghost margin
+    report: dict = {"mode": mode, "max_shift_px": shift}
+
+    mask = cv2.GaussianBlur(hard, (0, 0), FEATHER_PX)[..., None]
     out = np.clip(sky * (1 - mask) + fg * mask, 0, 1)
+
+    if foreground is not None:
+        # the long exposure replaces the ground only: the ghost margin above it is sky, and its trailed,
+        # differently exposed sky must not show there
+        from astroclaw.enhance import align_and_match, load_foreground_frame
+        frame, report["foreground"] = align_and_match(load_foreground_frame(foreground, fg.shape[:2]), fg, ground)
+        report["foreground"]["frame"] = foreground.name
+        inner = cv2.GaussianBlur(cv2.erode(ground, np.ones((9, 9), np.uint8)), (0, 0), FEATHER_PX / 2)[..., None]
+        out = np.clip(out * (1 - inner) + frame * inner, 0, 1)
+
+    if gradient is not None:
+        from astroclaw.enhance import sky_gradient, to_linear, to_srgb
+        open_sky = 1.0 - ground
+        model, level, report["gradient"] = sky_gradient(sky, open_sky, gradient)
+        lin = to_linear(out)
+        # Near the skyline, how much a pixel is sky is read off its brightness against the fitted
+        # background: glowing sky ~1, dark ridge ~0. The detected line sits a few px off the true edge,
+        # and a geometric weight alone left a lit rim above the ridge or a colour-shifted one on it.
+        skyness = np.clip(lum(lin) / np.maximum(lum(model), 1e-6), 0, 1)[..., None] ** 2
+        # The zone must end softly: a hard edge repeats the skyline's contour inside bright haze below it.
+        core = cv2.GaussianBlur(cv2.erode(open_sky, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (97, 97))), (0, 0), 16)[..., None]
+        zone = cv2.GaussianBlur(cv2.dilate(open_sky, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41))), (0, 0), 14)[..., None]
+        weight = np.maximum(core, zone * skyness)
+        out = to_srgb(lin - weight * (model - level))
+        glow = model - model.min()
+        cv2.imwrite(str(workdir / "preview_gradient.jpg"),
+                    cv2.cvtColor(stretch8(cv2.resize(glow, None, fx=0.2, fy=0.2), 0, 100), cv2.COLOR_RGB2BGR))
 
     np.save(workdir / "blend.npy", out)
     small = lambda im: cv2.resize(im, None, fx=0.2, fy=0.2, interpolation=cv2.INTER_AREA)
@@ -113,7 +152,8 @@ def blend(workdir: Path, mode: str) -> Path:
     overlay[sel] = (0.5 * overlay[sel] + np.array([0, 0, 128])).astype(np.uint8)
     cv2.imwrite(str(workdir / "preview_blend.jpg"), preview)
     cv2.imwrite(str(workdir / "preview_mask.jpg"), overlay)
-    return workdir / "preview_mask.jpg"
+    (workdir / "blend.json").write_text(json.dumps(report, indent=2))
+    return report
 
 
 def crop_preview(workdir: Path, y: int, x: int, size: int = 1000) -> Path:

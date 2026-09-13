@@ -37,6 +37,8 @@ def main() -> None:
     b = sub.add_parser("blend")
     b.add_argument("workdir", type=Path)
     b.add_argument("mode", choices=["horizon", "objects"])
+    b.add_argument("--foreground", type=Path, help="long exposure of the same composition, used for the ground")
+    b.add_argument("--gradient", type=int, choices=[1, 2, 3], help="remove sky glow with a polynomial of this degree")
 
     c = sub.add_parser("crop")
     c.add_argument("workdir", type=Path)
@@ -47,6 +49,7 @@ def main() -> None:
     f = sub.add_parser("finish")
     f.add_argument("workdir", type=Path)
     f.add_argument("--dest", type=Path)
+    f.add_argument("--no-jpeg", action="store_true")
 
     a = p.parse_args()
     if a.cmd in ("runs", "prepare"):
@@ -69,10 +72,10 @@ def main() -> None:
         print(stack(a.workdir, a.keep_work))
     elif a.cmd == "blend":
         from astroclaw.blend import blend
-        print(blend(a.workdir, a.mode))
+        print(blend(a.workdir, a.mode, a.foreground, a.gradient))
     elif a.cmd == "crop":
         from astroclaw.blend import crop_preview
         print(crop_preview(a.workdir, a.y, a.x, a.size))
     elif a.cmd == "finish":
         from astroclaw.finish import finish
-        print(finish(a.workdir, a.dest or a.workdir.parent))
+        print(*finish(a.workdir, a.dest or a.workdir.parent, not a.no_jpeg), sep="\n")
