@@ -124,7 +124,35 @@ def objects_mask(fg: np.ndarray, shift: float) -> np.ndarray:
     return cv2.resize(m.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
 
 
-def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: int | None = None) -> dict:
+def snap_to_edges(mask: np.ndarray, guide: np.ndarray, radius: int = 10, eps: float = 1e-4) -> np.ndarray:
+    """Guided filter (He et al.): move a coarse mask's edges onto the image's own edges at full resolution.
+
+    Masks computed at 1/4 scale, or upscaled from a model's 1-2 k output, step in blocks along a
+    diagonal roof or a dish rim; the filter keeps the mask where the image is flat and follows the
+    image where it has an edge.
+    """
+    box = lambda x: cv2.boxFilter(x, -1, (2 * radius + 1, 2 * radius + 1))
+    mean_i, mean_p = box(guide), box(mask)
+    cov = box(guide * mask) - mean_i * mean_p
+    var = box(guide * guide) - mean_i * mean_i
+    a = cov / (var + eps)
+    b = mean_p - a * mean_i
+    return (box(a) * guide + box(b) > 0.5).astype(np.float32)
+
+
+def restack_rows(ground: np.ndarray, mode: str, shift: float) -> tuple[int, int]:
+    """Rows in which the foreground can have ghosted into the sky stack."""
+    h = ground.shape[0]
+    g = ground > 0.5
+    if mode == "horizon":
+        line = np.where(g.any(0), g.argmax(0), h)
+        return max(int(line.min() - 2 * shift - 120), 0), min(int(line.max() + 40), h)
+    first = int(np.flatnonzero(g.any(1))[0]) if g.any() else h
+    return max(int(first - 2 * shift - 40), 0), h
+
+
+def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: int | None = None,
+          segment: bool = False) -> dict:
     reg = workdir / "registration.json"
     shift = json.loads(reg.read_text())["max_shift_px"] if reg.exists() else DEFAULT_SHIFT_PX
     rotation = ROTATIONS.get(orientation(workdir))
@@ -138,6 +166,17 @@ def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: in
         # err towards the sky: a skyline 1-2 px low treats dark ridge pixels as sky
         ground = np.maximum(ground, np.roll(ground, -2, axis=0))
     report: dict = {"mode": mode, "max_shift_px": shift}
+    if segment:
+        # thresholds cannot follow a lattice or antenna rods; the model can, and the threshold mask keeps
+        # what a salient-object model ignores: ground, fences, buildings, objects cut by the frame edge
+        from astroclaw.segment import birefnet_mask
+        seg = birefnet_mask(stretch8(fg), workdir / "segment_birefnet.png")
+        ground = np.maximum(ground, (seg > 0.5).astype(np.float32))
+    if mode == "objects":
+        guide = np.log(np.clip(lum(fg), 1e-4, None))
+        guide = (guide - guide.min()) / max(float(np.ptp(guide)), 1e-6)
+        ground = snap_to_edges(ground, guide)
+        report["segment"] = {"model": "birefnet", "foreground_px": int((seg > 0.5).sum())}
 
     ground_layer = fg
     if foreground is not None:
@@ -145,12 +184,13 @@ def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: in
         ground_layer, report["foreground"] = align_and_match(load_foreground_frame(foreground, fg.shape[:2]), fg, ground)
         report["foreground"]["frame"] = foreground.name
 
-    restack = mode == "horizon" and any((workdir / "work").glob("r_f_*.fit"))
-    if restack:
-        # ONE boundary for every layer: sky above the refined skyline, ground below it. Separate
-        # boundaries a few px apart are exactly what draws parallel contours along a ridge.
-        from astroclaw.skyband import restack_band
-        sky, report["skyband"] = restack_band(workdir, rotate, fg, sky, ground, shift)
+    work = workdir / "work"
+    if any(work.glob("r_f_*.fit")) or any(work.glob("r_f_*.npy")):
+        # ONE boundary for every layer: sky outside the foreground, ground inside it. Separate
+        # boundaries a few px apart are exactly what draws parallel contours along an edge.
+        from astroclaw.restack import restack
+        rows = restack_rows(ground, mode, shift)
+        sky, report["restack"] = restack(workdir, rotate, fg, sky, ground, rows, fade_top=mode == "horizon")
         mask = cv2.GaussianBlur(ground, (0, 0), 1.5)[..., None]
         out = np.clip(sky * (1 - mask) + ground_layer * mask, 0, 1)
     else:

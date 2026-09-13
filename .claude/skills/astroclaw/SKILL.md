@@ -32,9 +32,15 @@ CLI in this repo: `uv run astroclaw <cmd>`. Needs `siril-cli` 1.4+ and `exiftool
    - **`--foreground`**: look for a 1-5 min frame right before or after the run with the SAME framing
      (`runs` hides it: different settings, one frame). Compare it with the run's first frame visually.
      `blend.json` must show `ecc` > 0.9 and a shift of a few px; the command refuses worse.
-   - **Skyline restack** (horizon mode, automatic): `blend.json` → `skyband.frames` must show every
-     frame `used` with ECC > 0.9 and shifts that progress smoothly frame to frame; a jump means one
-     frame aligned on something other than the ridge.
+   - **Restack** (automatic while `work/` holds aligned frames): `blend.json` → `restack.frames` must
+     show ECC > 0.95 for nearly all frames and shifts that progress smoothly frame to frame. Frames under
+     `MIN_ECC` (0.8) are dropped and listed as `used: false`; more than one or two means the outline
+     is not a reliable anchor.
+   - **`--segment`** for any `objects` shot with thin structures (lattice, rods, wires, branches,
+     people). Credentials come from the environment; the Replicate call happens once per workdir
+     (`segment_birefnet.png` is the cache - delete it to re-segment). BiRefNet finds the main object
+     only: ground, fences, buildings and objects cut by the frame edge still come from the threshold
+     mask, so check those parts of `preview_mask.jpg` separately.
    - **`--gradient 2`** is the default choice; `3` only for strong, uneven light domes. Read
      `preview_gradient.jpg`: it must be a smooth glow, brightest towards the horizon or a town.
 6. **Seam check at 1:1** - `uv run astroclaw crop <workdir> <y> <x>` on the hardest seam (bright
@@ -62,7 +68,8 @@ Tune in `src/astroclaw/blend.py`, re-run `blend` (seconds, no re-stack needed):
 | Blue or lit rim exactly on the ridge | the `np.roll(ground, -2)` skyline raise in `blend()`, or `REFINE_PX` |
 | `objects` flags star specks in the sky | `area >= 1500` threshold higher |
 | `objects` skips an object cut off by the frame edge | the `at_edge & (area >= 150)` floor lower |
-| `objects` misses thin members (antenna rods, branches) | the `8 * sigma` threshold lower |
+| `objects` misses thin members (antenna rods, branches) | `--segment` - do not lower thresholds for this |
+| Mask edges step in blocks along a roof or dish rim | `snap_to_edges` radius / eps in `blend.py` |
 | Doubled outlines next to bright objects | the `far` dilation, or the `+ 0.25` brightness cutoff lower |
 
 Report which knob moved and why; do not silently change thresholds that were tuned on other data.

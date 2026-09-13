@@ -4,7 +4,7 @@ Python 3.14 CLI (uv) that stacks nightscape JPG runs with `siril-cli` and blends
 stack with an unaligned foreground stack. Public repo: no personal paths, hostnames or image data.
 
 - Workflow and verification steps: `.claude/skills/astroclaw/SKILL.md`. Editing concepts: `docs/editing.md`.
-- `src/astroclaw/`: `runs.py` (EXIF → runs), `stack.ssf` + `stack.py` (Siril), `blend.py` (masks, layering), `enhance.py` (long-exposure foreground, sky gradient), `skyband.py` (ghost-free sky restack at the skyline),
+- `src/astroclaw/`: `runs.py` (EXIF → runs), `stack.ssf` + `stack.py` (Siril), `blend.py` (masks, layering), `enhance.py` (long-exposure foreground, sky gradient), `restack.py` (ghost-free sky: foreground cut out per aligned frame), `segment.py` (BiRefNet via Replicate),
   `finish.py` (TIFF + EXIF), `cli.py`.
 - Every layer (sky, ground, gradient) must share ONE skyline. Separate boundaries a few px apart
   draw parallel contours along a ridge; that bug was fixed three times before this rule existed.

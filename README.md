@@ -45,14 +45,17 @@ Both `blend` options are optional:
 | Option | Does | Why |
 |-|-|-|
 | `--foreground <jpg>` | uses one long exposure of the same composition for the ground: aligned on the ground (ECC, refuses a shift over 30 px), tone-matched by histogram to the stack | a 2-4 min frame has far less noise in dark ground than any stack of short frames; its trailed sky is never used |
+| `--segment` | adds a BiRefNet foreground mask (Replicate) to the threshold mask, then snaps both to the image's edges at full resolution | lattice towers, antenna rods, branches: thinner than any safe dilation and inside the sky's brightness range. Needs `REPLICATE_API_TOKEN`; `REPLICATE_BASE_URL` for a compatible gateway. The mask is cached in the workdir |
 | `--gradient 1\|2\|3` | fits the sky glow (light pollution, airglow) as a polynomial in linear light over open sky and subtracts it | flattens the horizon glow before any editing; the Milky Way's own glow is clipped out of the fit |
 
 A run is consecutive frames with identical ISO, aperture and shutter, each starting within
 `shutter + 20 s` of the previous one. `prepare` copies; originals are never touched.
 
-In `horizon` mode `blend` also restacks the sky near the skyline from the aligned frames with the
-ground cut out of each one, so stars reach the ridge instead of stopping at a ghost margin. That
-needs the aligned frames `stack` keeps (~0.35 GB per frame) until `finish` deletes them.
+`blend` also restacks the sky from the aligned frames with the foreground cut out of each one (in
+`horizon` mode only the band above the skyline, in `objects` mode the whole frame), so stars reach the
+ridge or the tower instead of stopping at a starless ghost margin. That needs the aligned frames
+`stack` keeps (~0.35 GB per frame, converted to ~0.15 GB float16 on first use) until `finish`
+deletes them. Without them `blend` falls back to the margin.
 
 ## Editing the result
 
