@@ -50,8 +50,9 @@ Both `blend` options are optional:
 A run is consecutive frames with identical ISO, aperture and shutter, each starting within
 `shutter + 20 s` of the previous one. `prepare` copies; originals are never touched.
 
-Disk: Siril's intermediates take about 0.4 GB per frame while `stack` runs and are deleted
-afterwards (`--keep-work` keeps them).
+In `horizon` mode `blend` also restacks the sky near the skyline from the aligned frames with the
+ground cut out of each one, so stars reach the ridge instead of stopping at a ghost margin. That
+needs the aligned frames `stack` keeps (~0.35 GB per frame) until `finish` deletes them.
 
 ## Editing the result
 

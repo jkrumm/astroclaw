@@ -6,7 +6,7 @@ from importlib.resources import files
 from pathlib import Path
 
 
-def stack(workdir: Path, keep_work: bool = False) -> dict:
+def stack(workdir: Path, keep_work: bool = True) -> dict:
     src = workdir / "src"
     if not any(src.glob("*.[jJ][pP][gG]")):
         raise SystemExit(f"no JPGs in {src}")
@@ -31,7 +31,10 @@ def stack(workdir: Path, keep_work: bool = False) -> dict:
         "max_shift_px": _max_shift(workdir / "work" / "f_.seq"),
     }
     (workdir / "registration.json").write_text(json.dumps(info, indent=2))
-    if not keep_work:
+    if keep_work:
+        for f in (workdir / "work").glob("f_*.fit"):   # only the aligned frames are needed later
+            f.unlink()
+    else:
         shutil.rmtree(workdir / "work")  # ~0.4 GB per frame, fully regenerable
     return info
 

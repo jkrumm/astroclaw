@@ -64,8 +64,31 @@ def horizon_mask(fg: np.ndarray, shift: float) -> np.ndarray:
     padded = np.pad(horizon, 4, mode="edge")
     horizon = np.array([np.median(padded[i:i + 9]) for i in range(sw)], dtype=np.float32)
     horizon = np.interp(np.arange(w), np.arange(sw) * s + s / 2, horizon * s)
+    horizon = _refine_skyline(lum(fg), horizon)
     rows = np.arange(h)[:, None]
     return (rows >= horizon[None, :] - shift).astype(np.float32)  # ghosts reach the full registration shift
+
+
+REFINE_PX = 16  # the coarse line is found at 1/4 scale; the edge is searched this far either side at full size
+
+
+def _refine_skyline(luma: np.ndarray, coarse: np.ndarray) -> np.ndarray:
+    """Move each column's skyline onto the strongest full-resolution edge near the coarse estimate.
+
+    A line a few px below the true edge leaves a strip of sky treated as ground: a lit rim once the
+    sky's glow is removed everywhere else.
+    """
+    h, w = luma.shape
+    g = cv2.GaussianBlur(np.log(np.clip(luma, 1e-4, None)), (0, 0), 1.5)
+    edge = np.zeros_like(g)
+    edge[1:-1] = g[:-2] - g[2:]
+    offsets = np.arange(-REFINE_PX, REFINE_PX + 1)
+    rows = np.clip(np.round(coarse).astype(int)[None, :] + offsets[:, None], 1, h - 2)
+    strength = np.take_along_axis(edge, rows, axis=0)
+    # the mask starts at the dark side of the edge
+    refined = rows[strength.argmax(0), np.arange(w)] + 1
+    padded = np.pad(refined, 2, mode="edge")
+    return np.array([np.median(padded[i:i + 5]) for i in range(w)], dtype=np.float32)
 
 
 def objects_mask(fg: np.ndarray, shift: float) -> np.ndarray:
@@ -110,36 +133,43 @@ def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: in
 
     sky = rotate(load_fits(workdir / "sky_stack.fit"))
     fg = rotate(load_fits(workdir / "fg_stack.fit"))
-    hard = make_mask(fg, shift)
     ground = make_mask(fg, 0.0)          # the foreground itself, without the ghost margin
+    if mode == "horizon":
+        # err towards the sky: a skyline 1-2 px low treats dark ridge pixels as sky
+        ground = np.maximum(ground, np.roll(ground, -2, axis=0))
     report: dict = {"mode": mode, "max_shift_px": shift}
 
-    mask = cv2.GaussianBlur(hard, (0, 0), FEATHER_PX)[..., None]
-    out = np.clip(sky * (1 - mask) + fg * mask, 0, 1)
-
+    ground_layer = fg
     if foreground is not None:
-        # the long exposure replaces the ground only: the ghost margin above it is sky, and its trailed,
-        # differently exposed sky must not show there
         from astroclaw.enhance import align_and_match, load_foreground_frame
-        frame, report["foreground"] = align_and_match(load_foreground_frame(foreground, fg.shape[:2]), fg, ground)
+        ground_layer, report["foreground"] = align_and_match(load_foreground_frame(foreground, fg.shape[:2]), fg, ground)
         report["foreground"]["frame"] = foreground.name
-        inner = cv2.GaussianBlur(cv2.erode(ground, np.ones((9, 9), np.uint8)), (0, 0), FEATHER_PX / 2)[..., None]
-        out = np.clip(out * (1 - inner) + frame * inner, 0, 1)
+
+    restack = mode == "horizon" and any((workdir / "work").glob("r_f_*.fit"))
+    if restack:
+        # ONE boundary for every layer: sky above the refined skyline, ground below it. Separate
+        # boundaries a few px apart are exactly what draws parallel contours along a ridge.
+        from astroclaw.skyband import restack_band
+        sky, report["skyband"] = restack_band(workdir, rotate, fg, sky, ground, shift)
+        mask = cv2.GaussianBlur(ground, (0, 0), 1.5)[..., None]
+        out = np.clip(sky * (1 - mask) + ground_layer * mask, 0, 1)
+    else:
+        margin = cv2.GaussianBlur(make_mask(fg, shift), (0, 0), FEATHER_PX)[..., None]
+        out = np.clip(sky * (1 - margin) + fg * margin, 0, 1)
+        if foreground is not None:
+            # the long exposure replaces the ground only; its trailed sky must not show in the margin
+            inner = cv2.GaussianBlur(cv2.erode(ground, np.ones((9, 9), np.uint8)), (0, 0), FEATHER_PX / 2)[..., None]
+            out = np.clip(out * (1 - inner) + ground_layer * inner, 0, 1)
+        mask = margin
 
     if gradient is not None:
         from astroclaw.enhance import sky_gradient, to_linear, to_srgb
         open_sky = 1.0 - ground
         model, level, report["gradient"] = sky_gradient(sky, open_sky, gradient)
+        weight = cv2.GaussianBlur(open_sky, (0, 0), 1.5)[..., None]
         lin = to_linear(out)
-        # Near the skyline, how much a pixel is sky is read off its brightness against the fitted
-        # background: glowing sky ~1, dark ridge ~0. The detected line sits a few px off the true edge,
-        # and a geometric weight alone left a lit rim above the ridge or a colour-shifted one on it.
-        skyness = np.clip(lum(lin) / np.maximum(lum(model), 1e-6), 0, 1)[..., None] ** 2
-        # The zone must end softly: a hard edge repeats the skyline's contour inside bright haze below it.
-        core = cv2.GaussianBlur(cv2.erode(open_sky, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (97, 97))), (0, 0), 16)[..., None]
-        zone = cv2.GaussianBlur(cv2.dilate(open_sky, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (41, 41))), (0, 0), 14)[..., None]
-        weight = np.maximum(core, zone * skyness)
-        out = to_srgb(lin - weight * (model - level))
+        # never remove more than half of a pixel's own light: a dark pixel treated as sky must not clip
+        out = to_srgb(lin - np.minimum(weight * (model - level), 0.5 * lin))
         glow = model - model.min()
         cv2.imwrite(str(workdir / "preview_gradient.jpg"),
                     cv2.cvtColor(stretch8(cv2.resize(glow, None, fx=0.2, fy=0.2), 0, 100), cv2.COLOR_RGB2BGR))

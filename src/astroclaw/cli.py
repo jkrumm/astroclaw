@@ -2,7 +2,7 @@
 
   astroclaw runs <jpg-dir>                        list stackable runs
   astroclaw prepare <jpg-dir> <out-root> [--run N] copy runs into <out-root>/<first-frame>/src
-  astroclaw stack <workdir>                        Siril: fg_stack.fit + sky_stack.fit
+  astroclaw stack <workdir>                        Siril: fg_stack.fit + sky_stack.fit + aligned frames
   astroclaw blend <workdir> horizon|objects        blend + preview_mask.jpg / preview_blend.jpg
   astroclaw crop <workdir> <y> <x>                 1:1 crop of the blend for seam checks
   astroclaw finish <workdir> [--dest DIR]          16-bit TIFF with EXIF
@@ -32,7 +32,7 @@ def main() -> None:
 
     s = sub.add_parser("stack")
     s.add_argument("workdir", type=Path)
-    s.add_argument("--keep-work", action="store_true")
+    s.add_argument("--discard-work", action="store_true", help="delete the aligned frames too (no skyline restack)")
 
     b = sub.add_parser("blend")
     b.add_argument("workdir", type=Path)
@@ -69,7 +69,7 @@ def main() -> None:
             print(src.parent)
     elif a.cmd == "stack":
         from astroclaw.stack import stack
-        print(stack(a.workdir, a.keep_work))
+        print(stack(a.workdir, keep_work=not a.discard_work))
     elif a.cmd == "blend":
         from astroclaw.blend import blend
         print(blend(a.workdir, a.mode, a.foreground, a.gradient))

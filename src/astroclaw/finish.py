@@ -1,4 +1,5 @@
 """Write the blend as a 16-bit TIFF and a JPEG, both carrying the first frame's EXIF."""
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -32,4 +33,5 @@ def finish(workdir: Path, dest: Path, jpeg: bool = True) -> list[Path]:
         subprocess.run(["exiftool", "-q", "-overwrite_original", "-Orientation#=1", "-IFD1:Orientation#=",
                         "-ThumbnailImage=", str(target)], check=True)
     (workdir / "blend.npy").unlink()
+    shutil.rmtree(workdir / "work", ignore_errors=True)   # aligned frames kept for the skyline restack
     return written

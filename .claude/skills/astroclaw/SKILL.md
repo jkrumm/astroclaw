@@ -18,7 +18,8 @@ CLI in this repo: `uv run astroclaw <cmd>`. Needs `siril-cli` 1.4+ and `exiftool
    the source JPGs, they may be the only copy of the night.
 3. **Stack** - `uv run astroclaw stack <workdir>` (~2-4 min per 25 frames). Check the printed
    `registered` equals `frames`; fewer means Siril dropped frames (clouds, a car's headlights).
-   `max_shift_px` is how far the sky moved; it sizes the mask margin automatically.
+   `max_shift_px` is how far the sky moved; it sizes the mask margin automatically. The aligned frames
+   stay in `work/` (~0.35 GB each) for the skyline restack; `finish` deletes them.
 4. **Pick the mode** from the first frame:
    - `horizon`: the foreground is everything below one skyline (mountains, sea, ridge).
    - `objects`: structures stick up into the sky (tower, tree, building, person).
@@ -31,6 +32,9 @@ CLI in this repo: `uv run astroclaw <cmd>`. Needs `siril-cli` 1.4+ and `exiftool
    - **`--foreground`**: look for a 1-5 min frame right before or after the run with the SAME framing
      (`runs` hides it: different settings, one frame). Compare it with the run's first frame visually.
      `blend.json` must show `ecc` > 0.9 and a shift of a few px; the command refuses worse.
+   - **Skyline restack** (horizon mode, automatic): `blend.json` → `skyband.frames` must show every
+     frame `used` with ECC > 0.9 and shifts that progress smoothly frame to frame; a jump means one
+     frame aligned on something other than the ridge.
    - **`--gradient 2`** is the default choice; `3` only for strong, uneven light domes. Read
      `preview_gradient.jpg`: it must be a smooth glow, brightest towards the horizon or a town.
 6. **Seam check at 1:1** - `uv run astroclaw crop <workdir> <y> <x>` on the hardest seam (bright
@@ -53,7 +57,9 @@ Tune in `src/astroclaw/blend.py`, re-run `blend` (seconds, no re-stack needed):
 | `horizon` line misses a faint far ridge | `HORIZON_EDGE` lower (edge strength relative to the strongest edges) |
 | `horizon` line snags on a dust lane or cloud edge in the sky | `HORIZON_EDGE` higher, or `HORIZON_SEARCH` start lower in the frame |
 | Horizon sits outside 55-97 % of the frame height | `HORIZON_SEARCH` |
-| Lit rim above the ridge, or a copied ridge contour in haze below it | the `core` / `zone` kernels in `blend()`'s gradient block |
+| Starless or lighter band right above the ridge | skyline restack not running (`work/` deleted?), or `FULL_COVERAGE` in `skyband.py` too high |
+| Dark diagonal streaks next to peaks | `MASK_GROW_PX` in `skyband.py` higher (ridge edge leaking into low-coverage frames) |
+| Blue or lit rim exactly on the ridge | the `np.roll(ground, -2)` skyline raise in `blend()`, or `REFINE_PX` |
 | `objects` flags star specks in the sky | `area >= 1500` threshold higher |
 | `objects` skips an object cut off by the frame edge | the `at_edge & (area >= 150)` floor lower |
 | `objects` misses thin members (antenna rods, branches) | the `8 * sigma` threshold lower |
