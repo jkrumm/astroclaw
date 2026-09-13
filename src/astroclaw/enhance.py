@@ -131,3 +131,34 @@ def sky_gradient(img: np.ndarray, sky: np.ndarray, degree: int) -> tuple[np.ndar
     info = {"degree": degree, "blocks_used": int(keep.sum()), "blocks_sky": int(sky_blocks.sum()),
             "range": round(float(np.ptp(_gray(model)[sky_full])), 4)}
     return model, level, info
+
+
+GROUND_TO_SKY = 0.4    # auto exposure: ground median at this fraction of the horizon sky's median, linear light
+MAX_AUTO_EV = 2.5
+CEILING_TO_SKY = 0.8   # lifted ground approaches, never exceeds, this fraction of the sky's median
+
+
+def expose_ground(layer: np.ndarray, sky: np.ndarray, ground: np.ndarray, ev: str) -> tuple[np.ndarray, dict]:
+    """Brighten the foreground layer in linear light, saturating below the sky's brightness.
+
+    A night foreground straight from the camera sits 2-3 stops under the sky it stands against, which
+    reads as a black cut-out. "auto" lifts the ground's median to GROUND_TO_SKY of the sky just above it.
+    """
+    g = ground > 0.5
+    deep = cv2.erode(g.astype(np.uint8), np.ones((31, 31), np.uint8)) > 0
+    near_sky = (cv2.dilate(g.astype(np.uint8), np.ones((301, 1), np.uint8)) > 0) & ~g
+    lin = to_linear(layer)
+    ground_med = float(np.median(_gray(lin)[deep])) if deep.any() else 0.0
+    sky_med = float(np.median(_gray(to_linear(sky))[near_sky])) if near_sky.any() else 0.0
+    if ev == "auto":
+        stops = float(np.clip(np.log2(max(GROUND_TO_SKY * sky_med, 1e-6) / max(ground_med, 1e-6)), 0, MAX_AUTO_EV))
+    else:
+        stops = float(ev)
+    # The gain applies to dark ground and saturates towards a ceiling just under the sky's brightness:
+    # a straight gain also pushed hazy far ridges, already as bright as the sky, into a white band.
+    ceiling = max(CEILING_TO_SKY * sky_med, 1e-4)
+    y = _gray(lin)
+    lifted = ceiling * (1 - np.exp(-y * 2 ** stops / ceiling))
+    ratio = np.where(y > 1e-6, np.maximum(lifted, y) / np.maximum(y, 1e-6), 1.0)[..., None]
+    return to_srgb(lin * ratio), {"ev": round(stops, 2), "ground_median_before": round(ground_med, 5),
+                                  "sky_median": round(sky_med, 5), "ceiling": round(ceiling, 5)}

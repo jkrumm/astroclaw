@@ -92,6 +92,26 @@ def _refine_skyline(luma: np.ndarray, coarse: np.ndarray) -> np.ndarray:
     return np.array([np.median(padded[i:i + 5]) for i in range(w)], dtype=np.float32)
 
 
+def _sky_through_structures(fg: np.ndarray, ground: np.ndarray, protected: np.ndarray) -> np.ndarray:
+    """Sky seen through a fence or railing that a ground-level segmentation counted as fence.
+
+    Such pixels look like the sky next to them: the smooth sky background (fitted on open sky and
+    extrapolated) in brightness and colour, with little local texture. Only blobs larger than a railing
+    bar are released, so the bars themselves stay foreground; the main object (`protected`) never is.
+    """
+    from astroclaw.enhance import sky_gradient, to_linear
+    model, _, _ = sky_gradient(fg, (~ground).astype(np.float32), 2)
+    lin = to_linear(fg)
+    ratio = lum(lin) / np.maximum(lum(model), 1e-6)
+    chroma = np.abs(lin / np.maximum(lin.sum(-1, keepdims=True), 1e-6)
+                    - model / np.maximum(model.sum(-1, keepdims=True), 1e-6)).max(-1)
+    g = lum(fg)
+    texture = np.sqrt(np.maximum(cv2.blur(g * g, (9, 9)) - cv2.blur(g, (9, 9)) ** 2, 0))
+    sky_like = (ratio > 0.7) & (ratio < 1.35) & (chroma < 0.04) & (texture < 0.02) & ground & ~protected
+    sky_like = cv2.morphologyEx(sky_like.astype(np.uint8), cv2.MORPH_OPEN, np.ones((15, 15), np.uint8)) > 0
+    return sky_like
+
+
 def _ground_down_and_up(low: np.ndarray, fg: np.ndarray, reach: int = 160) -> np.ndarray:
     """Complete a ground-objects mask per column: everything below its top is ground, and its top moves
     up onto the sky edge when a thin band (distant hills behind a fence) sits just above it."""
@@ -174,7 +194,7 @@ def restack_rows(ground: np.ndarray, mode: str, shift: float) -> tuple[int, int]
 
 
 def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: int | None = None,
-          segment: bool = False, foreground_tone: str = "lift") -> dict:
+          segment: bool = False, foreground_tone: str = "lift", foreground_ev: str | None = "auto") -> dict:
     reg = workdir / "registration.json"
     shift = json.loads(reg.read_text())["max_shift_px"] if reg.exists() else DEFAULT_SHIFT_PX
     rotation = ROTATIONS.get(orientation(workdir))
@@ -197,6 +217,7 @@ def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: in
         seg = birefnet_mask(preview8, workdir / "segment_birefnet.png") > 0.5
         low = _ground_down_and_up(ground_objects_mask(preview8, workdir / "segment_ground.png") > 0.5, fg)
         top_edge = objects_mask(fg, 0.0, fill_ground=False, top_edge_only=True) > 0.5
+        low &= ~_sky_through_structures(fg, (seg | low | top_edge), seg)
         ground = (seg | low | top_edge).astype(np.float32)
         report["segment"] = {"birefnet_px": int(seg.sum()), "ground_objects_px": int(low.sum()),
                              "top_edge_px": int(top_edge.sum())}
@@ -229,6 +250,10 @@ def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: in
         ground_layer, report["foreground"] = align_and_match(load_foreground_frame(foreground, fg.shape[:2]), fg, ground,
                                                             foreground_tone, sky_level)
         report["foreground"]["frame"] = foreground.name
+
+    if foreground_ev is not None:
+        from astroclaw.enhance import expose_ground
+        ground_layer, report["foreground_exposure"] = expose_ground(ground_layer, sky, ground, foreground_ev)
 
     if restacked:
         mask = cv2.GaussianBlur(ground, (0, 0), 1.5)[..., None]

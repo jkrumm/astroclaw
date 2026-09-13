@@ -40,11 +40,13 @@ def _api(path: str, body: dict | None = None) -> dict:
         return json.load(resp)
 
 
-def _predict(version: str, inputs: dict) -> list[str]:
+def _predict(model: str, version: str, inputs: dict, cache: Path) -> list[str]:
+    from astroclaw.usage import record_prediction
     pred = _api("/predictions", {"version": version, "input": inputs})
     while pred.get("status") not in ("succeeded", "failed", "canceled"):
         time.sleep(2)
         pred = _api(pred["urls"]["get"])
+    record_prediction(model, f"segment:{model.split('/')[-1]}", pred, cache.parent)
     if pred["status"] != "succeeded":
         raise SystemExit(f"segmentation failed: {pred.get('error')}")
     out = pred["output"]
@@ -76,7 +78,8 @@ def _cached(cache: Path, shape: tuple[int, int], compute) -> np.ndarray:
 def birefnet_mask(image_rgb8: np.ndarray, cache: Path) -> np.ndarray:
     """The main object, to the rod: foreground probability 0..1 at the input's resolution. Cached."""
     def compute():
-        rgba = _fetch(_predict(BIREFNET_VERSION, {"image": _upload(image_rgb8), "resolution": "1024x1024"})[0])
+        rgba = _fetch(_predict("men1scus/birefnet", BIREFNET_VERSION,
+                               {"image": _upload(image_rgb8), "resolution": "1024x1024"}, cache)[0])
         return rgba[..., 3] if rgba.ndim == 3 and rgba.shape[2] == 4 else cv2.cvtColor(rgba, cv2.COLOR_BGR2GRAY)
     return _cached(cache, image_rgb8.shape[:2], compute)
 
@@ -84,8 +87,9 @@ def birefnet_mask(image_rgb8: np.ndarray, cache: Path) -> np.ndarray:
 def ground_objects_mask(image_rgb8: np.ndarray, cache: Path, prompt: str = GROUND_PROMPT) -> np.ndarray:
     """Everything at ground level a salient-object model ignores (Grounded-SAM, text prompt). Cached."""
     def compute():
-        outputs = _predict(GROUNDED_SAM_VERSION, {"image": _upload(image_rgb8), "mask_prompt": prompt,
-                                                   "negative_mask_prompt": "sky", "adjustment_factor": 0})
+        outputs = _predict("schananas/grounded_sam", GROUNDED_SAM_VERSION,
+                           {"image": _upload(image_rgb8), "mask_prompt": prompt,
+                            "negative_mask_prompt": "sky", "adjustment_factor": 0}, cache)
         mask = next((u for u in outputs if u.rsplit("/", 1)[-1] == "mask.jpg"), None)
         if mask is None:
             raise SystemExit(f"grounded-sam returned no mask.jpg: {outputs}")

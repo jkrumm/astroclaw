@@ -42,6 +42,8 @@ def main() -> None:
     b.add_argument("--foreground-tone", choices=["lift", "frame", "stack"], default="lift",
                    help="lift: long exposure in dark ground, stack tone where the ground is as bright as the "
                         "horizon sky (default); frame: long exposure everywhere; stack: stack tone everywhere")
+    b.add_argument("--foreground-ev", default="auto",
+                   help="brighten the foreground by this many stops, 'auto' (relative to the sky) or 'off'")
     b.add_argument("--segment", action="store_true", help="add a BiRefNet foreground mask (Replicate) for thin structures")
 
     c = sub.add_parser("crop")
@@ -49,6 +51,9 @@ def main() -> None:
     c.add_argument("y", type=int)
     c.add_argument("x", type=int)
     c.add_argument("--size", type=int, default=1000)
+
+    u = sub.add_parser("usage", help="paid model calls: local log, totals, re-send to the ledger")
+    u.add_argument("action", choices=["summary", "sync"])
 
     f = sub.add_parser("finish")
     f.add_argument("workdir", type=Path)
@@ -76,10 +81,14 @@ def main() -> None:
         print(stack(a.workdir, keep_work=not a.discard_work))
     elif a.cmd == "blend":
         from astroclaw.blend import blend
-        print(blend(a.workdir, a.mode, a.foreground, a.gradient, a.segment, a.foreground_tone))
+        print(blend(a.workdir, a.mode, a.foreground, a.gradient, a.segment, a.foreground_tone,
+                    None if a.foreground_ev == "off" else a.foreground_ev))
     elif a.cmd == "crop":
         from astroclaw.blend import crop_preview
         print(crop_preview(a.workdir, a.y, a.x, a.size))
+    elif a.cmd == "usage":
+        from astroclaw import usage
+        print(usage.summary() if a.action == "summary" else usage.sync())
     elif a.cmd == "finish":
         from astroclaw.finish import finish
         print(*finish(a.workdir, a.dest or a.workdir.parent, not a.no_jpeg), sep="\n")

@@ -44,6 +44,7 @@ Both `blend` options are optional:
 
 | Option | Does | Why |
 |-|-|-|
+| `--foreground-ev auto\|N\|off` | brightens the foreground in linear light (auto: ground median to 40 % of the horizon sky, max +2.5 EV), saturating just under the sky's brightness so hazy ridges and lamps do not blow out | a night foreground straight from the camera sits 2-3 stops under its sky and reads as a black cut-out |
 | `--foreground <jpg>` | uses one long exposure of the same composition for the ground: aligned on the ground (ECC, refuses a shift over 30 px). `--foreground-tone lift` (default) keeps its brightness in dark ground and eases to the stack's tone where the ground is as bright as the de-glowed horizon sky; `frame` / `stack` are the two extremes | a 2-4 min frame has far less noise in dark ground than any stack of short frames; its trailed sky is never used |
 | `--segment` | builds the foreground from segmentation (Replicate): BiRefNet for the main object down to single rods, Grounded-SAM for ground level (fence, building, grass, hills), plus threshold blobs cut by the top edge; snapped to the image's edges at full resolution | lattice towers, antenna rods, branches: thinner than any safe dilation and inside the sky's brightness range. Needs `REPLICATE_API_TOKEN`; `REPLICATE_BASE_URL` for a compatible gateway. The mask is cached in the workdir |
 | `--gradient 1\|2\|3` | fits the sky glow (light pollution, airglow) as a polynomial in linear light over open sky and subtracts it | flattens the horizon glow before any editing; the Milky Way's own glow is clipped out of the fit |
@@ -56,6 +57,15 @@ A run is consecutive frames with identical ISO, aperture and shutter, each start
 ridge or the tower instead of stopping at a starless ghost margin. That needs the aligned frames
 `stack` keeps (~0.35 GB per frame, converted to ~0.15 GB float16 on first use) until `finish`
 deletes them. Without them `blend` falls back to the margin.
+
+## Cost of paid model calls
+
+`--segment` calls two models on Replicate (BiRefNet ~1 s on an A100, Grounded-SAM ~14 s on an L40S:
+about $0.0014 + $0.013 per shot, computed from `predict_time` and the model's hardware rate). Every
+call is appended to `~/.local/share/astroclaw/usage.jsonl` and, when `ASTROCLAW_USAGE_URL` and
+`ASTROCLAW_USAGE_TOKEN` are set, reported to a usage ledger accepting `POST {"records": [...]}`.
+`astroclaw usage summary` totals the log; `astroclaw usage sync` re-sends what the ledger did not
+accept. Rates and model hardware are pinned in `src/astroclaw/usage.py`.
 
 ## Editing the result
 

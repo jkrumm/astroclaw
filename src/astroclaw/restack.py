@@ -18,6 +18,7 @@ MASK_GROW_PX = 6      # safety margin around each frame's foreground; edges are 
 MIN_FRAMES = 5        # a restack needs at least this many aligned frames
 MIN_ECC = 0.8         # the foreground outline matches at 0.95+; a frame far below aligned on something else
 FULL_COVERAGE = 10    # a sky pixel seen by this many frames uses the restack alone; fewer blend towards fg
+STAR_COVERAGE = 3     # frames needed before a low-coverage pixel carries star detail at full strength
 CHUNK_ROWS = 192
 
 
@@ -119,12 +120,19 @@ def restack(workdir: Path, rotate, fg: np.ndarray, sky: np.ndarray, ground: np.n
     sky_px = region_ground == 0
     well = (sky_px & (count >= len(used) // 2)).astype(np.float32)
     fill = np.nan_to_num(band_sky)
-    fg_region = fg[r0:r1]
-    den = cv2.GaussianBlur(well, (0, 0), 40) + 1e-6
-    offset = np.stack([cv2.GaussianBlur((fill[..., c] - fg_region[..., c]) * well, (0, 0), 40) / den
-                       for c in range(3)], -1)
+    # Filling from the unaligned stack left a starless, lighter strip along the outline. Instead the
+    # sky's own smooth background is carried down to the outline (normalised convolution from
+    # well-covered sky), and star detail is added wherever at least a few frames saw sky.
+    den = cv2.GaussianBlur(well, (0, 0), 25) + 1e-6
+    background = np.stack([cv2.GaussianBlur(cv2.medianBlur(fill[..., c], 5) * well, (0, 0), 25) / den
+                           for c in range(3)], -1)
+    seen = (count > 0).astype(np.float32)
+    local_bg = np.stack([cv2.GaussianBlur(cv2.medianBlur(fill[..., c], 5) * seen, (0, 0), 25)
+                         / (cv2.GaussianBlur(seen, (0, 0), 25) + 1e-6) for c in range(3)], -1)
+    detail = (fill - local_bg) * seen[..., None]
     trust = np.clip(count / FULL_COVERAGE, 0, 1)[..., None]
-    band_sky = fill * trust + (fg_region + offset) * (1 - trust)
+    stars = np.clip(count / STAR_COVERAGE, 0, 1)[..., None]
+    band_sky = fill * trust + (background + detail * stars) * (1 - trust)
 
     out = sky.copy()
     if fade_top:   # a band: fade in from its top, where the ordinary stack was already ghost-free

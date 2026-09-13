@@ -42,6 +42,8 @@ CLI in this repo: `uv run astroclaw <cmd>`. Needs `siril-cli` 1.4+ and `exiftool
      BiRefNet finds the main object; Grounded-SAM (`GROUND_PROMPT` in `segment.py`) the ground level;
      objects cut by the top edge come from thresholds. Check sky seen through fences and railings:
      Grounded-SAM counts it as fence, so it comes out starless.
+   - **Costs**: set `ASTROCLAW_USAGE_URL` / `ASTROCLAW_USAGE_TOKEN` before a `--segment` run so the calls
+     reach the usage ledger; `uv run astroclaw usage summary` after the run, and report the total.
    - **`--gradient 2`** is the default choice; `3` only for strong, uneven light domes. Read
      `preview_gradient.jpg`: it must be a smooth glow, brightest towards the horizon or a town.
 6. **Seam check at 1:1** - `uv run astroclaw crop <workdir> <y> <x>` on the hardest seam (bright
