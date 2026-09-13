@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv
+
+# Image data never belongs in the repo
+*.jpg
+*.JPG
+*.jpeg
+*.raf
+*.RAF
+*.fit
+*.fits
+*.tif
+*.tiff
+*.seq

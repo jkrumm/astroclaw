@@ -1,0 +1,20 @@
+[project]
+name = "astroclaw"
+version = "0.1.0"
+description = "Agent-drivable nightscape stacking: Siril sky + foreground stacks, blended along a detected mask"
+readme = "README.md"
+authors = [{ name = "jkrumm" }]
+requires-python = ">=3.14"
+dependencies = [
+    "astropy==8.0.1",
+    "numpy==2.5.3",
+    "opencv-python-headless==5.0.0.93",
+    "tifffile==2026.9.9",
+]
+
+[project.scripts]
+astroclaw = "astroclaw.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"

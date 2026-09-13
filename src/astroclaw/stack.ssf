@@ -1,0 +1,11 @@
+requires 1.4.0
+setext fit
+set32bits
+cd src
+convert f -out=../work
+cd ../work
+# foreground: no alignment, the ground did not move
+stack f rej w 3 3 -norm=addscale -output_norm -32b -out=../fg_stack
+# sky: align on stars (homography absorbs wide-angle distortion), then stack
+register f -transf=homography -interp=lanczos4
+stack r_f rej w 3 3 -norm=addscale -output_norm -weight=wfwhm -32b -out=../sky_stack
