@@ -19,6 +19,8 @@ import cv2
 import numpy as np
 
 BIREFNET_VERSION = "f74986db0355b58403ed20963af156525e2891ea3c2d499bfbfb2a28cd87c5d7"  # men1scus/birefnet
+GROUNDED_SAM_VERSION = "ee871c19efb1941f55f66a3d7d960428c8a5afcb77449547fe8e5a3ab9ebc21c"  # schananas/grounded_sam
+GROUND_PROMPT = "building,fence,ground,grass,hill,mountain,rock,road,wall"
 UPLOAD_LONG_EDGE = 2016  # the model's own input size is 1024; more upload only buys JPEG detail on thin members
 
 
@@ -38,24 +40,55 @@ def _api(path: str, body: dict | None = None) -> dict:
         return json.load(resp)
 
 
-def birefnet_mask(image_rgb8: np.ndarray, cache: Path) -> np.ndarray:
-    """Foreground probability 0..1 at the input's resolution. Cached: a re-blend never re-uploads."""
+def _predict(version: str, inputs: dict) -> list[str]:
+    pred = _api("/predictions", {"version": version, "input": inputs})
+    while pred.get("status") not in ("succeeded", "failed", "canceled"):
+        time.sleep(2)
+        pred = _api(pred["urls"]["get"])
+    if pred["status"] != "succeeded":
+        raise SystemExit(f"segmentation failed: {pred.get('error')}")
+    out = pred["output"]
+    return [out] if isinstance(out, str) else list(out)
+
+
+def _fetch(url: str) -> np.ndarray:
+    with urllib.request.urlopen(url, timeout=180) as resp:
+        return cv2.imdecode(np.frombuffer(resp.read(), np.uint8), cv2.IMREAD_UNCHANGED)
+
+
+def _upload(image_rgb8: np.ndarray) -> str:
     h, w = image_rgb8.shape[:2]
+    scale = UPLOAD_LONG_EDGE / max(h, w)
+    small = cv2.resize(image_rgb8, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    ok, jpg = cv2.imencode(".jpg", cv2.cvtColor(small, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
+    return "data:image/jpeg;base64," + base64.b64encode(jpg.tobytes()).decode()
+
+
+def _cached(cache: Path, shape: tuple[int, int], compute) -> np.ndarray:
     if cache.exists():
-        alpha = cv2.imread(str(cache), cv2.IMREAD_GRAYSCALE)
+        mask = cv2.imread(str(cache), cv2.IMREAD_GRAYSCALE)
     else:
-        scale = UPLOAD_LONG_EDGE / max(h, w)
-        small = cv2.resize(image_rgb8, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
-        ok, jpg = cv2.imencode(".jpg", cv2.cvtColor(small, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
-        uri = "data:image/jpeg;base64," + base64.b64encode(jpg.tobytes()).decode()
-        pred = _api("/predictions", {"version": BIREFNET_VERSION, "input": {"image": uri, "resolution": "1024x1024"}})
-        while pred.get("status") not in ("succeeded", "failed", "canceled"):
-            time.sleep(2)
-            pred = _api(pred["urls"]["get"])
-        if pred["status"] != "succeeded":
-            raise SystemExit(f"segmentation failed: {pred.get('error')}")
-        with urllib.request.urlopen(pred["output"], timeout=180) as resp:
-            rgba = cv2.imdecode(np.frombuffer(resp.read(), np.uint8), cv2.IMREAD_UNCHANGED)
-        alpha = rgba[..., 3] if rgba.ndim == 3 and rgba.shape[2] == 4 else cv2.cvtColor(rgba, cv2.COLOR_BGR2GRAY)
-        cv2.imwrite(str(cache), alpha)
-    return cv2.resize(alpha, (w, h), interpolation=cv2.INTER_CUBIC).astype(np.float32) / 255.0
+        mask = compute()
+        cv2.imwrite(str(cache), mask)
+    return cv2.resize(mask, (shape[1], shape[0]), interpolation=cv2.INTER_CUBIC).astype(np.float32) / 255.0
+
+
+def birefnet_mask(image_rgb8: np.ndarray, cache: Path) -> np.ndarray:
+    """The main object, to the rod: foreground probability 0..1 at the input's resolution. Cached."""
+    def compute():
+        rgba = _fetch(_predict(BIREFNET_VERSION, {"image": _upload(image_rgb8), "resolution": "1024x1024"})[0])
+        return rgba[..., 3] if rgba.ndim == 3 and rgba.shape[2] == 4 else cv2.cvtColor(rgba, cv2.COLOR_BGR2GRAY)
+    return _cached(cache, image_rgb8.shape[:2], compute)
+
+
+def ground_objects_mask(image_rgb8: np.ndarray, cache: Path, prompt: str = GROUND_PROMPT) -> np.ndarray:
+    """Everything at ground level a salient-object model ignores (Grounded-SAM, text prompt). Cached."""
+    def compute():
+        outputs = _predict(GROUNDED_SAM_VERSION, {"image": _upload(image_rgb8), "mask_prompt": prompt,
+                                                   "negative_mask_prompt": "sky", "adjustment_factor": 0})
+        mask = next((u for u in outputs if u.rsplit("/", 1)[-1] == "mask.jpg"), None)
+        if mask is None:
+            raise SystemExit(f"grounded-sam returned no mask.jpg: {outputs}")
+        img = _fetch(mask)
+        return img if img.ndim == 2 else cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    return _cached(cache, image_rgb8.shape[:2], compute)

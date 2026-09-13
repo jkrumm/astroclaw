@@ -13,6 +13,7 @@ import numpy as np
 from astropy.io import fits
 
 FEATHER_PX = 12
+GLOW_DEPTH_PX = 250   # how far below the outline the sky glow still veils the foreground
 DEFAULT_SHIFT_PX = 75.0
 
 # EXIF Orientation -> rotation that turns sensor pixels (what Siril stacks) into display pixels
@@ -91,7 +92,26 @@ def _refine_skyline(luma: np.ndarray, coarse: np.ndarray) -> np.ndarray:
     return np.array([np.median(padded[i:i + 5]) for i in range(w)], dtype=np.float32)
 
 
-def objects_mask(fg: np.ndarray, shift: float) -> np.ndarray:
+def _ground_down_and_up(low: np.ndarray, fg: np.ndarray, reach: int = 160) -> np.ndarray:
+    """Complete a ground-objects mask per column: everything below its top is ground, and its top moves
+    up onto the sky edge when a thin band (distant hills behind a fence) sits just above it."""
+    h, w = low.shape
+    lower = h // 2
+    has = low[lower:].any(0)
+    top = np.where(has, lower + low[lower:].argmax(0), h)
+    g = cv2.GaussianBlur(np.log(np.clip(lum(fg), 1e-4, None)), (0, 0), 2.0)
+    edge = np.zeros_like(g)
+    edge[1:-1] = g[:-2] - g[2:]
+    strong = np.percentile(edge[lower:], 99.0)
+    out = low.copy()
+    for x in np.flatnonzero(has):
+        y0 = max(int(top[x]) - reach, lower)
+        hits = np.flatnonzero(edge[y0:top[x] + 1, x] > 0.5 * strong)
+        out[(y0 + hits[0] + 1 if hits.size else top[x]):, x] = True
+    return out
+
+
+def objects_mask(fg: np.ndarray, shift: float, fill_ground: bool = True, top_edge_only: bool = False) -> np.ndarray:
     h, w = fg.shape[:2]
     s = 4
     small = cv2.resize(fg, (w // s, h // s), interpolation=cv2.INTER_AREA)
@@ -108,6 +128,8 @@ def objects_mask(fg: np.ndarray, shift: float) -> np.ndarray:
     x1, y1 = x0 + stats[1:, cv2.CC_STAT_WIDTH], y0 + stats[1:, cv2.CC_STAT_HEIGHT]
     at_edge = (x0 == 0) | (y0 == 0) | (x1 == m.shape[1])  # an object cut by the frame shows only a sliver
     keep[1:] = (area >= 1500) | (at_edge & (area >= 150))   # drop star and trail specks
+    if top_edge_only:   # objects cut off by the top of the frame: no segmentation model sees a sliver
+        keep[1:] = (y0 == 0) & (area >= 150)
     m = keep[labels]
     near = int(shift / 3 / s) * 2 + 1
     m = cv2.dilate(m, np.ones((near, near), np.uint8))
@@ -116,7 +138,7 @@ def objects_mask(fg: np.ndarray, shift: float) -> np.ndarray:
     bright = ((L > np.median(L[: small.shape[0] // 3]) + 0.25) & (m > 0)).astype(np.uint8)
     far = int(shift / s) * 2 + 1
     m |= cv2.dilate(bright, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (far, far)))
-    lower = int(m.shape[0] * 0.75)
+    lower = int(m.shape[0] * 0.75) if fill_ground else m.shape[0]
     for x in range(m.shape[1]):               # below the first structure in the lower quarter is ground
         hits = np.nonzero(m[lower:, x])[0]
         if hits.size:
@@ -152,7 +174,7 @@ def restack_rows(ground: np.ndarray, mode: str, shift: float) -> tuple[int, int]
 
 
 def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: int | None = None,
-          segment: bool = False) -> dict:
+          segment: bool = False, foreground_tone: str = "lift") -> dict:
     reg = workdir / "registration.json"
     shift = json.loads(reg.read_text())["max_shift_px"] if reg.exists() else DEFAULT_SHIFT_PX
     rotation = ROTATIONS.get(orientation(workdir))
@@ -167,30 +189,48 @@ def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: in
         ground = np.maximum(ground, np.roll(ground, -2, axis=0))
     report: dict = {"mode": mode, "max_shift_px": shift}
     if segment:
-        # thresholds cannot follow a lattice or antenna rods; the model can, and the threshold mask keeps
-        # what a salient-object model ignores: ground, fences, buildings, objects cut by the frame edge
-        from astroclaw.segment import birefnet_mask
-        seg = birefnet_mask(stretch8(fg), workdir / "segment_birefnet.png")
-        ground = np.maximum(ground, (seg > 0.5).astype(np.float32))
+        # BiRefNet follows a lattice to the rod but only sees the main object; Grounded-SAM names the
+        # ground level (fence, building, grass); objects cut by the top edge come from the threshold
+        # mask. No full threshold mask: its cable and noise blobs between tower legs read as ground.
+        from astroclaw.segment import birefnet_mask, ground_objects_mask
+        preview8 = stretch8(fg)
+        seg = birefnet_mask(preview8, workdir / "segment_birefnet.png") > 0.5
+        low = _ground_down_and_up(ground_objects_mask(preview8, workdir / "segment_ground.png") > 0.5, fg)
+        top_edge = objects_mask(fg, 0.0, fill_ground=False, top_edge_only=True) > 0.5
+        ground = (seg | low | top_edge).astype(np.float32)
+        report["segment"] = {"birefnet_px": int(seg.sum()), "ground_objects_px": int(low.sum()),
+                             "top_edge_px": int(top_edge.sum())}
     if mode == "objects":
         guide = np.log(np.clip(lum(fg), 1e-4, None))
         guide = (guide - guide.min()) / max(float(np.ptp(guide)), 1e-6)
         ground = snap_to_edges(ground, guide)
-        report["segment"] = {"model": "birefnet", "foreground_px": int((seg > 0.5).sum())}
-
-    ground_layer = fg
-    if foreground is not None:
-        from astroclaw.enhance import align_and_match, load_foreground_frame
-        ground_layer, report["foreground"] = align_and_match(load_foreground_frame(foreground, fg.shape[:2]), fg, ground)
-        report["foreground"]["frame"] = foreground.name
 
     work = workdir / "work"
-    if any(work.glob("r_f_*.fit")) or any(work.glob("r_f_*.npy")):
+    restacked = any(work.glob("r_f_*.fit")) or any(work.glob("r_f_*.npy"))
+    if restacked:
         # ONE boundary for every layer: sky outside the foreground, ground inside it. Separate
         # boundaries a few px apart are exactly what draws parallel contours along an edge.
         from astroclaw.restack import restack
         rows = restack_rows(ground, mode, shift)
         sky, report["restack"] = restack(workdir, rotate, fg, sky, ground, rows, fade_top=mode == "horizon")
+
+    if gradient is not None:
+        from astroclaw.enhance import sky_gradient
+        model, level, report["gradient"] = sky_gradient(sky, 1.0 - ground, gradient)
+
+    ground_layer = fg
+    if foreground is not None:
+        from astroclaw.enhance import align_and_match, load_foreground_frame, to_linear
+        # the lift's ceiling is the sky just above the foreground AS IT WILL LOOK, i.e. after glow removal:
+        # measured before it, hazy far ridges were lifted past the de-glowed sky and read as a lit band
+        near = (cv2.dilate(ground, np.ones((401, 1), np.uint8)) > 0.5) & (ground < 0.5)
+        sky_lin = to_linear(sky) - (model - level) if gradient is not None else to_linear(sky)
+        sky_level = float(np.median(lum(sky_lin)[near])) if near.any() else None
+        ground_layer, report["foreground"] = align_and_match(load_foreground_frame(foreground, fg.shape[:2]), fg, ground,
+                                                            foreground_tone, sky_level)
+        report["foreground"]["frame"] = foreground.name
+
+    if restacked:
         mask = cv2.GaussianBlur(ground, (0, 0), 1.5)[..., None]
         out = np.clip(sky * (1 - mask) + ground_layer * mask, 0, 1)
     else:
@@ -203,10 +243,13 @@ def blend(workdir: Path, mode: str, foreground: Path | None = None, gradient: in
         mask = margin
 
     if gradient is not None:
-        from astroclaw.enhance import sky_gradient, to_linear, to_srgb
+        from astroclaw.enhance import to_linear, to_srgb
         open_sky = 1.0 - ground
-        model, level, report["gradient"] = sky_gradient(sky, open_sky, gradient)
-        weight = cv2.GaussianBlur(open_sky, (0, 0), 1.5)[..., None]
+        # Haze and airglow sit in front of the landscape too: the glow continues into the foreground and
+        # fades with distance below the outline, so a hazy far ridge does not stay lit against a
+        # de-glowed sky. Continuous at the outline, hence no rim.
+        depth = cv2.distanceTransform((ground > 0.5).astype(np.uint8), cv2.DIST_L2, 5)
+        weight = np.maximum(cv2.GaussianBlur(open_sky, (0, 0), 1.5), np.exp(-depth / GLOW_DEPTH_PX) * (ground > 0.5))[..., None]
         lin = to_linear(out)
         # never remove more than half of a pixel's own light: a dark pixel treated as sky must not clip
         out = to_srgb(lin - np.minimum(weight * (model - level), 0.5 * lin))

@@ -39,6 +39,9 @@ def main() -> None:
     b.add_argument("mode", choices=["horizon", "objects"])
     b.add_argument("--foreground", type=Path, help="long exposure of the same composition, used for the ground")
     b.add_argument("--gradient", type=int, choices=[1, 2, 3], help="remove sky glow with a polynomial of this degree")
+    b.add_argument("--foreground-tone", choices=["lift", "frame", "stack"], default="lift",
+                   help="lift: long exposure in dark ground, stack tone where the ground is as bright as the "
+                        "horizon sky (default); frame: long exposure everywhere; stack: stack tone everywhere")
     b.add_argument("--segment", action="store_true", help="add a BiRefNet foreground mask (Replicate) for thin structures")
 
     c = sub.add_parser("crop")
@@ -73,7 +76,7 @@ def main() -> None:
         print(stack(a.workdir, keep_work=not a.discard_work))
     elif a.cmd == "blend":
         from astroclaw.blend import blend
-        print(blend(a.workdir, a.mode, a.foreground, a.gradient, a.segment))
+        print(blend(a.workdir, a.mode, a.foreground, a.gradient, a.segment, a.foreground_tone))
     elif a.cmd == "crop":
         from astroclaw.blend import crop_preview
         print(crop_preview(a.workdir, a.y, a.x, a.size))

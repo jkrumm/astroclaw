@@ -40,8 +40,14 @@ def load_foreground_frame(path: Path, shape: tuple[int, int]) -> np.ndarray:
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
 
 
-def align_and_match(frame: np.ndarray, fg_stack: np.ndarray, ground: np.ndarray) -> tuple[np.ndarray, dict]:
-    """Translate `frame` onto the stack using ground pixels only, then match its brightness per channel.
+def align_and_match(frame: np.ndarray, fg_stack: np.ndarray, ground: np.ndarray,
+                    tone: str = "lift", sky_level: float | None = None) -> tuple[np.ndarray, dict]:
+    """Translate `frame` onto the stack using ground pixels only; with tone="stack" also match its brightness.
+
+    tone="stack" pulls it down to the stack's tonal range. tone="frame" keeps the long exposure's own
+    brightness, which also keeps its glow: a hazy far ridge then outshines the de-glowed sky above it
+    and reads as a lit band. tone="lift" (default) is the long exposure where the ground is dark and the
+    stack's tone where the ground is as bright as the horizon sky (`sky_level`, linear luminance).
 
     ECC is invariant to gain and offset, so a frame one stop brighter still aligns. Brightness is
     matched on block medians of the ground, so the result sits in the stack's tonal range and the
@@ -65,6 +71,8 @@ def align_and_match(frame: np.ndarray, fg_stack: np.ndarray, ground: np.ndarray)
     aligned = cv2.warpAffine(frame, full, (w, h), flags=cv2.INTER_LANCZOS4 | cv2.WARP_INVERSE_MAP,
                              borderMode=cv2.BORDER_REFLECT)
 
+    if tone == "frame":
+        return aligned, {"shift_px": [round(dx, 1), round(dy, 1)], "ecc": round(float(cc), 3), "tone": "frame"}
     # brightness: a per-channel tone curve, by matching the two histograms over the same ground pixels.
     # A straight gain fitted to dark near hills left hazy far ridges and cloud seas visibly too light.
     sel = _erode(ground, 24) > 0
@@ -78,7 +86,13 @@ def align_and_match(frame: np.ndarray, fg_stack: np.ndarray, ground: np.ndarray)
         matched[..., c] = np.interp(aligned[..., c], src_q, dst_q)
     mid = np.percentile(frame_small, 50, axis=0), np.percentile(stack_small, 50, axis=0)
     ratio = [round(float(to_linear(d) / max(to_linear(f), 1e-6)), 3) for f, d in zip(*mid)]
-    return matched, {"shift_px": [round(dx, 1), round(dy, 1)], "ecc": round(float(cc), 3), "median_gain": ratio}
+    info = {"shift_px": [round(dx, 1), round(dy, 1)], "ecc": round(float(cc), 3), "median_gain": ratio, "tone": tone}
+    if tone == "lift" and sky_level:
+        base, bright = to_linear(matched), to_linear(aligned)
+        lift = np.clip(1 - _gray(base) / sky_level, 0, 1)[..., None]
+        info["sky_level"] = round(float(sky_level), 4)
+        return to_srgb(base + (bright - base) * lift), info
+    return matched, info
 
 
 def sky_gradient(img: np.ndarray, sky: np.ndarray, degree: int) -> tuple[np.ndarray, dict]:

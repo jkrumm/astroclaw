@@ -44,8 +44,8 @@ Both `blend` options are optional:
 
 | Option | Does | Why |
 |-|-|-|
-| `--foreground <jpg>` | uses one long exposure of the same composition for the ground: aligned on the ground (ECC, refuses a shift over 30 px), tone-matched by histogram to the stack | a 2-4 min frame has far less noise in dark ground than any stack of short frames; its trailed sky is never used |
-| `--segment` | adds a BiRefNet foreground mask (Replicate) to the threshold mask, then snaps both to the image's edges at full resolution | lattice towers, antenna rods, branches: thinner than any safe dilation and inside the sky's brightness range. Needs `REPLICATE_API_TOKEN`; `REPLICATE_BASE_URL` for a compatible gateway. The mask is cached in the workdir |
+| `--foreground <jpg>` | uses one long exposure of the same composition for the ground: aligned on the ground (ECC, refuses a shift over 30 px). `--foreground-tone lift` (default) keeps its brightness in dark ground and eases to the stack's tone where the ground is as bright as the de-glowed horizon sky; `frame` / `stack` are the two extremes | a 2-4 min frame has far less noise in dark ground than any stack of short frames; its trailed sky is never used |
+| `--segment` | builds the foreground from segmentation (Replicate): BiRefNet for the main object down to single rods, Grounded-SAM for ground level (fence, building, grass, hills), plus threshold blobs cut by the top edge; snapped to the image's edges at full resolution | lattice towers, antenna rods, branches: thinner than any safe dilation and inside the sky's brightness range. Needs `REPLICATE_API_TOKEN`; `REPLICATE_BASE_URL` for a compatible gateway. The mask is cached in the workdir |
 | `--gradient 1\|2\|3` | fits the sky glow (light pollution, airglow) as a polynomial in linear light over open sky and subtracts it | flattens the horizon glow before any editing; the Milky Way's own glow is clipped out of the fit |
 
 A run is consecutive frames with identical ISO, aperture and shutter, each starting within

@@ -38,9 +38,10 @@ CLI in this repo: `uv run astroclaw <cmd>`. Needs `siril-cli` 1.4+ and `exiftool
      is not a reliable anchor.
    - **`--segment`** for any `objects` shot with thin structures (lattice, rods, wires, branches,
      people). Credentials come from the environment; the Replicate call happens once per workdir
-     (`segment_birefnet.png` is the cache - delete it to re-segment). BiRefNet finds the main object
-     only: ground, fences, buildings and objects cut by the frame edge still come from the threshold
-     mask, so check those parts of `preview_mask.jpg` separately.
+     (`segment_birefnet.png`, `segment_ground.png` are the caches - delete one to re-segment).
+     BiRefNet finds the main object; Grounded-SAM (`GROUND_PROMPT` in `segment.py`) the ground level;
+     objects cut by the top edge come from thresholds. Check sky seen through fences and railings:
+     Grounded-SAM counts it as fence, so it comes out starless.
    - **`--gradient 2`** is the default choice; `3` only for strong, uneven light domes. Read
      `preview_gradient.jpg`: it must be a smooth glow, brightest towards the horizon or a town.
 6. **Seam check at 1:1** - `uv run astroclaw crop <workdir> <y> <x>` on the hardest seam (bright
@@ -63,8 +64,10 @@ Tune in `src/astroclaw/blend.py`, re-run `blend` (seconds, no re-stack needed):
 | `horizon` line misses a faint far ridge | `HORIZON_EDGE` lower (edge strength relative to the strongest edges) |
 | `horizon` line snags on a dust lane or cloud edge in the sky | `HORIZON_EDGE` higher, or `HORIZON_SEARCH` start lower in the frame |
 | Horizon sits outside 55-97 % of the frame height | `HORIZON_SEARCH` |
-| Starless or lighter band right above the ridge | skyline restack not running (`work/` deleted?), or `FULL_COVERAGE` in `skyband.py` too high |
-| Dark diagonal streaks next to peaks | `MASK_GROW_PX` in `skyband.py` higher (ridge edge leaking into low-coverage frames) |
+| Starless or lighter band right above the ridge | skyline restack not running (`work/` deleted?), or `FULL_COVERAGE` in `restack.py` too high |
+| Dark diagonal streaks next to peaks | `MASK_GROW_PX` in `restack.py` higher (ridge edge leaking into low-coverage frames) |
+| Hazy far ridges a lit band against the sky | `GLOW_DEPTH_PX` in `blend.py` higher (glow correction reaching into the foreground) |
+| Near ground too dark / too bright with `--foreground` | `--foreground-tone frame` / `stack` |
 | Blue or lit rim exactly on the ridge | the `np.roll(ground, -2)` skyline raise in `blend()`, or `REFINE_PX` |
 | `objects` flags star specks in the sky | `area >= 1500` threshold higher |
 | `objects` skips an object cut off by the frame edge | the `at_edge & (area >= 150)` floor lower |
